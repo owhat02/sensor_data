@@ -14,7 +14,7 @@ import matplotlib.dates as mdates
 
 
 EXCEL_PATH   = r"해부학적자세.xlsx"
-SHEET_NAME   = "sensor_data(accelerometer)"
+SHEET_NAME   = "sensor_data(linear_acc)"
 TIME_COL     = "measured_at"
 X_COL        = "x"
 Y_COL        = "y"
@@ -86,8 +86,8 @@ def main():
         lines.append(ln_m); labels.append("|a|")
 
     ax.set_xlabel("Time")
-    ax.set_ylabel("Acceleration")
-    ax.set_title("Accelerometer (x, y, z over time)")
+    ax.set_ylabel("LINEAR_ACCELERATION")
+    ax.set_title("LINEAR_ACCELERATION (x, y, z over time)")
     ax.grid(True, alpha=0.3)
 
     # ★ 시간축 강제 포맷

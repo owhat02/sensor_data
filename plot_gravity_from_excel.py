@@ -1,6 +1,8 @@
-# plot_accel_from_excel_toggle_fixed_time.py
-# - 체크박스로 x/y/z/|a| 보이기/숨기기
-# - x축 시간 레이블을 연-월-일 시:분:초(필요시 마이크로초)로 강제 표시
+# plot_gravity_toggle.py
+# - gravity 센서: x, y, z (m/s^2) 시간축 그래프
+# - 체크박스로 각 축 보이기/숨기기
+# - x축 라벨은 "YYYY-MM-DD HH:MM:SS[.ffffff]"로 강제 표시
+# - 자동 저장 꺼둠 (SAVE_PNG_PATH=None)
 
 import os
 import pandas as pd
@@ -10,19 +12,20 @@ from matplotlib.widgets import CheckButtons
 import matplotlib.dates as mdates
 
 # import matplotlib
-# matplotlib.use("TkAgg")  # GUI 이슈 있으면 주석 해제
+# matplotlib.use("TkAgg")  # 체크박스 클릭 안 되면 주석 해제
 
-
+# ====== 여기만 네 파일에 맞게 수정 ======
 EXCEL_PATH   = r"해부학적자세.xlsx"
-SHEET_NAME   = "sensor_data(accelerometer)"
-TIME_COL     = "measured_at"
+SHEET_NAME   = "sensor_data_f_g"   # 시트명
+TIME_COL     = "measured_at"            # 시간 컬럼
 X_COL        = "x"
 Y_COL        = "y"
 Z_COL        = "z"
 
-SHOW_MAGNITUDE = True
-SMOOTH_WINDOW  = 0
-SAVE_PNG_PATH  = r"accel_plot.png"
+SHOW_MAGNITUDE = False   # |g|=sqrt(x^2+y^2+z^2)도 보고 싶으면 True
+SMOOTH_WINDOW  = 0       # 이동평균 창(표본 수). 0이면 미적용
+SAVE_PNG_PATH  = None    # 자동 저장 끔 (원하면 "gravity_plot.png" 등으로 지정)
+# ======================================
 
 def moving_average(series: pd.Series, window: int) -> pd.Series:
     if window and window > 1:
@@ -30,26 +33,20 @@ def moving_average(series: pd.Series, window: int) -> pd.Series:
     return series
 
 def setup_time_axis(ax, tseries: pd.Series):
-    """x축 시간 포매터/로케이터 강제 설정 (연도만 뜨는 문제 방지)"""
     tseries = pd.to_datetime(tseries)
-    # 데이터에 마이크로초라도 있으면 .%f까지 표시
     has_us = (tseries.dt.microsecond != 0).any()
     fmt = "%Y-%m-%d %H:%M:%S.%f" if has_us else "%Y-%m-%d %H:%M:%S"
-
-    # 기간에 맞춰 눈금 간격 대략 자동, 포맷은 강제
     locator = mdates.AutoDateLocator(minticks=5, maxticks=10)
     formatter = mdates.DateFormatter(fmt)
-
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(formatter)
-    # 레이블이 겹치면 자동 회전
     plt.setp(ax.get_xticklabels(), rotation=15, ha="right")
 
 def main():
     # 1) 데이터 로드
     df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
 
-    # 2) 시간 파싱(예외 포맷 보정 포함)
+    # 2) 시간 파싱(예외 포맷 보정)
     if not np.issubdtype(df[TIME_COL].dtype, np.datetime64):
         df[TIME_COL] = df[TIME_COL].astype(str).str.strip()
         # "yyyy-mm-dd hh:mm:ss:ms" -> "yyyy-mm-dd hh:mm:ss.ms"
@@ -63,34 +60,37 @@ def main():
     # 유효행만, 시간 정렬
     df = df.dropna(subset=[TIME_COL, X_COL, Y_COL, Z_COL]).copy().sort_values(TIME_COL)
 
-    # 3) 스무딩
-    x = moving_average(df[X_COL].astype(float), SMOOTH_WINDOW)
-    y = moving_average(df[Y_COL].astype(float), SMOOTH_WINDOW)
-    z = moving_average(df[Z_COL].astype(float), SMOOTH_WINDOW)
-    mag = np.sqrt(x**2 + y**2 + z**2) if SHOW_MAGNITUDE else None
+    # 3) 숫자 변환 & 스무딩
+    x = moving_average(pd.to_numeric(df[X_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
+    y = moving_average(pd.to_numeric(df[Y_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
+    z = moving_average(pd.to_numeric(df[Z_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
+
+    mag = None
+    if SHOW_MAGNITUDE:
+        mag = np.sqrt(x**2 + y**2 + z**2)
 
     # 4) 플롯
     fig, ax = plt.subplots(figsize=(12, 6))
-    fig.subplots_adjust(right=0.82)  # 체크박스 공간
+    fig.subplots_adjust(right=0.82)  # 체크박스 자리
 
     lines, labels = [], []
 
-    ln_x, = ax.plot(df[TIME_COL], x, marker="o", linestyle="-", markersize=3, label=X_COL)
-    lines.append(ln_x); labels.append(X_COL)
-    ln_y, = ax.plot(df[TIME_COL], y, marker="o", linestyle="-", markersize=3, label=Y_COL)
-    lines.append(ln_y); labels.append(Y_COL)
-    ln_z, = ax.plot(df[TIME_COL], z, marker="o", linestyle="-", markersize=3, label=Z_COL)
-    lines.append(ln_z); labels.append(Z_COL)
+    ln_x, = ax.plot(df[TIME_COL], x, marker="o", linestyle="-", markersize=3, label="x")
+    lines.append(ln_x); labels.append("x")
+    ln_y, = ax.plot(df[TIME_COL], y, marker="o", linestyle="-", markersize=3, label="y")
+    lines.append(ln_y); labels.append("y")
+    ln_z, = ax.plot(df[TIME_COL], z, marker="o", linestyle="-", markersize=3, label="z")
+    lines.append(ln_z); labels.append("z")
+
     if SHOW_MAGNITUDE and mag is not None:
-        ln_m, = ax.plot(df[TIME_COL], mag, marker="o", linestyle="-", markersize=3, label="|a|")
-        lines.append(ln_m); labels.append("|a|")
+        ln_m, = ax.plot(df[TIME_COL], mag, marker="o", linestyle="-", markersize=3, label="|g|")
+        lines.append(ln_m); labels.append("|g|")
 
     ax.set_xlabel("Time")
-    ax.set_ylabel("Acceleration")
-    ax.set_title("Accelerometer (x, y, z over time)")
+    ax.set_ylabel("Gravity (m/s²)")
+    ax.set_title("GRAVITY (x, y, z over time)")
     ax.grid(True, alpha=0.3)
 
-    # ★ 시간축 강제 포맷
     setup_time_axis(ax, df[TIME_COL])
 
     # (보조) 범례
@@ -109,7 +109,7 @@ def main():
 
     check.on_clicked(on_check)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=(0, 0, 0.82, 1))
     plt.show()
 
 if __name__ == "__main__":
