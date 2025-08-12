@@ -167,11 +167,6 @@ def main():
     if '_ord' in df.columns:
         df.drop(columns=['_ord'], inplace=True)
 
-    # 자동 저장(원하면 경로 유지, 끄려면 None)
-    if SAVE_PNG_PATH:
-        fig.savefig(SAVE_PNG_PATH, dpi=150)
-        print(f"[✓] saved: {os.path.abspath(SAVE_PNG_PATH)}")
-
     plt.tight_layout(rect=(0, 0, 0.82, 1))
     plt.show()
 

@@ -1,6 +1,6 @@
-# ACCELEROMETER (동시간 샘플 펼치기 적용: timestamp 블록을 인덱스 순서대로 등분)
+# ACCELEROMETER (동시간 샘플 펼치기 적용 + 날짜별 분리 플로팅)
 # - 같은 timestamp에 샘플이 여러 개면, 그 다음 고유 시간까지 간격을 등분해 배치
-# - x/y/z/|a| 모두 같은 x축(t_plot)을 사용
+# - 날짜별로 잘라서 각각의 figure에 그리되, x축은 시간(시:분:초[.us])만 표시
 
 import os
 import pandas as pd
@@ -8,9 +8,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import CheckButtons
 import matplotlib.dates as mdates
-
-# import matplotlib
-# matplotlib.use("TkAgg")  # GUI 이슈 있으면 주석 해제
 
 EXCEL_PATH   = r"해부학적자세.xlsx"
 SHEET_NAME   = "sensor_data(accelerometer)"
@@ -21,7 +18,7 @@ Z_COL        = "z"
 
 SHOW_MAGNITUDE = True
 SMOOTH_WINDOW  = 0
-SAVE_PNG_PATH  = None  # 자동 저장 끔
+SAVE_PNG_PATH  = None  # 예: r"./out_plots"  # 폴더 지정하면 날짜별 PNG 저장
 
 # --------- 핵심: timestamp 블록을 펼쳐 시각화용 시간열 생성 ---------
 def build_plot_time_by_timestamp(df: pd.DataFrame, time_col: str,
@@ -67,50 +64,37 @@ def moving_average(series: pd.Series, window: int) -> pd.Series:
         return series.rolling(window, min_periods=max(1, window//2)).mean()
     return series
 
-def setup_time_axis(ax, tseries: pd.Series):
+def setup_time_axis_time_of_day(ax, tseries: pd.Series):
+    """날짜별 플롯이므로 시간(HH:MM:SS[.us])만 표시"""
     tseries = pd.to_datetime(tseries)
     has_us = (tseries.dt.microsecond != 0).any()
-    fmt = "%Y-%m-%d %H:%M:%S.%f" if has_us else "%Y-%m-%d %H:%M:%S"
+    fmt = "%H:%M:%S.%f" if has_us else "%H:%M:%S"
     locator = mdates.AutoDateLocator(minticks=5, maxticks=10)
     formatter = mdates.DateFormatter(fmt)
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(formatter)
     plt.setp(ax.get_xticklabels(), rotation=15, ha="right")
 
-def main():
-    # 1) 데이터 로드
-    df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
+def ensure_dir(path: str):
+    if path and not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
 
-    # 2) 시간 파싱(예외 포맷 보정 포함)
-    if not np.issubdtype(df[TIME_COL].dtype, np.datetime64):
-        df[TIME_COL] = df[TIME_COL].astype(str).str.strip()
-        # "yyyy-mm-dd hh:mm:ss:ms" -> "yyyy-mm-dd hh:mm:ss.ms"
-        df[TIME_COL] = df[TIME_COL].str.replace(
-            r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}):(\d+)$",
-            r"\1.\2", regex=True
-        )
-        df[TIME_COL] = pd.to_datetime(df[TIME_COL], errors="coerce", infer_datetime_format=True)
+def plot_one_day(df_day: pd.DataFrame, day_label: pd.Timestamp):
+    df_day = df_day.copy()
+    df_day['_ord'] = np.arange(len(df_day))
+    df_day = df_day.sort_values([TIME_COL, '_ord'], kind='mergesort')
 
-    # 3) 유효행만 남기고, 원래 순서를 보존하며 "안정 정렬"
-    df = df.dropna(subset=[TIME_COL, X_COL, Y_COL, Z_COL]).copy()
-    df['_ord'] = np.arange(len(df))  # 유입 순서 보존
-    df = df.sort_values([TIME_COL, '_ord'], kind='mergesort')
+    t_plot = build_plot_time_by_timestamp(df_day, TIME_COL, fallback='median')
 
-    # 4) 시각화용 시간열 생성: 같은 timestamp 블록 펼치기 (모든 시리즈 공통)
-    t_plot = build_plot_time_by_timestamp(df, TIME_COL, fallback='median')  # 필요시 'jitter'
-
-    # 5) 숫자 변환 & 스무딩
-    x = moving_average(pd.to_numeric(df[X_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
-    y = moving_average(pd.to_numeric(df[Y_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
-    z = moving_average(pd.to_numeric(df[Z_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
+    x = moving_average(pd.to_numeric(df_day[X_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
+    y = moving_average(pd.to_numeric(df_day[Y_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
+    z = moving_average(pd.to_numeric(df_day[Z_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
     mag = np.sqrt(x**2 + y**2 + z**2) if SHOW_MAGNITUDE else None
 
-    # 6) 플롯
     fig, ax = plt.subplots(figsize=(12, 6))
-    fig.subplots_adjust(right=0.82)  # 체크박스 자리
+    fig.subplots_adjust(right=0.82)
 
     lines, labels = [], []
-
     ln_x, = ax.plot(t_plot, x, marker="o", linestyle="-", markersize=3, label=X_COL)
     lines.append(ln_x); labels.append(X_COL)
     ln_y, = ax.plot(t_plot, y, marker="o", linestyle="-", markersize=3, label=Y_COL)
@@ -121,18 +105,15 @@ def main():
         ln_m, = ax.plot(t_plot, mag, marker="o", linestyle="-", markersize=3, label="|a|")
         lines.append(ln_m); labels.append("|a|")
 
-    ax.set_xlabel("Time")
+    ax.set_xlabel("Time of day")
     ax.set_ylabel("Acceleration")
-    ax.set_title("Accelerometer (x, y, z over time)")
+    ax.set_title(f"Accelerometer — {day_label.strftime('%Y-%m-%d')} (x, y, z over time)")
     ax.grid(True, alpha=0.3)
-
-    setup_time_axis(ax, t_plot)
-
-    # (보조) 범례
+    setup_time_axis_time_of_day(ax, t_plot)
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
 
-    # 7) 체크박스
-    rax = plt.axes([0.84, 0.4, 0.12, 0.2])
+    # ✅ (1) 이 figure에 명시적으로 축을 추가
+    rax = fig.add_axes([0.84, 0.4, 0.12, 0.2])
     states = [ln.get_visible() for ln in lines]
     check = CheckButtons(rax, labels, states)
 
@@ -140,21 +121,42 @@ def main():
         idx = labels.index(label)
         ln = lines[idx]
         ln.set_visible(not ln.get_visible())
-        plt.draw()
+        # ✅ (2) 이 figure만 다시 그리기
+        fig.canvas.draw_idle()
 
     check.on_clicked(on_check)
 
-    # 보조 컬럼 정리(선택)
-    if '_ord' in df.columns:
-        df.drop(columns=['_ord'], inplace=True)
-
-    # 자동 저장 끔
-    if SAVE_PNG_PATH:
-        fig.savefig(SAVE_PNG_PATH, dpi=150)
-        print(f"[✓] saved: {os.path.abspath(SAVE_PNG_PATH)}")
+    # ✅ (3) 위젯/데이터 참조 유지해서 GC 방지
+    fig._lines = lines
+    fig._labels = labels
+    fig._check = check
 
     plt.tight_layout(rect=(0, 0, 0.82, 1))
-    plt.show()
+
+def main():
+    # 0) 로드
+    df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
+
+    # 1) 시간 파싱(예외 포맷 보정 포함)
+    if not np.issubdtype(df[TIME_COL].dtype, np.datetime64):
+        df[TIME_COL] = df[TIME_COL].astype(str).str.strip()
+        df[TIME_COL] = df[TIME_COL].str.replace(
+            r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}):(\d+)$",
+            r"\1.\2", regex=True
+        )
+        df[TIME_COL] = pd.to_datetime(df[TIME_COL], errors="coerce", infer_datetime_format=True)
+
+    # 2) 유효행만
+    df = df.dropna(subset=[TIME_COL, X_COL, Y_COL, Z_COL]).copy()
+
+    # 3) 날짜 키로 그룹핑 (00:00 기준 정규화)
+    df['__date__'] = pd.to_datetime(df[TIME_COL]).dt.normalize()
+
+    # 4) 날짜별 플롯 생성
+    for day_key, df_day in df.groupby('__date__', sort=True):
+        plot_one_day(df_day, day_key)
+
+    plt.show()  # 모든 날짜의 figure를 한 번에 표시
 
 if __name__ == "__main__":
     main()
