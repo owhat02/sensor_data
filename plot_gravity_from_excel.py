@@ -1,4 +1,4 @@
-# GRAVITY — 날짜별 분리 + 동시간 펼치기 + 체크박스 고정 + 시간축(밀리초 2자리) 표시
+# GRAVITY — 날짜별 개별 창 + (날짜/데이터 조건별) 동시간 펼치기 + 체크박스 고정 + 시간축(밀리초 2자리)
 import os
 import pandas as pd
 import numpy as np
@@ -7,7 +7,7 @@ from matplotlib.widgets import CheckButtons
 import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
 
-EXCEL_PATH   = r"벽밀기.xlsx"
+EXCEL_PATH   = r"손목돌리기.xlsx"
 SHEET_NAME   = "sensor_data_f_g"
 TIME_COL     = "measured_at"
 X_COL        = "x"
@@ -16,15 +16,14 @@ Z_COL        = "z"
 
 SHOW_MAGNITUDE = False
 SMOOTH_WINDOW  = 0
-SAVE_PNG_DIR   = None 
-
+SAVE_PNG_DIR   = None  # 예: r"./out_gravity"
 
 def build_plot_time_by_timestamp(df: pd.DataFrame, time_col: str,
                                  fallback: str = 'median',
                                  jitter_us: int = 1000) -> pd.Series:
     """
     같은 timestamp 블록을 T..T_next 사이에 인덱스 비율(frac)대로 균등 분할해 배치.
-    (주의) 이 함수는 '하루분 데이터'에 적용하는 걸 권장 (다음날로 넘어가며 Δt가 커지는 것 방지)
+    (주의) 하루 단위 데이터에 적용 권장
     """
     t = pd.to_datetime(df[time_col])
 
@@ -66,7 +65,7 @@ def setup_time_of_day_axis(ax, tseries: pd.Series):
         # 예: 12:34:56.78  (마이크로초 6자리 중 앞 2자리만 표시)
         def short_ms(x, pos):
             s = mdates.num2date(x).strftime("%H:%M:%S.%f")
-            return s[:-4]  # 뒤 4자리 잘라서 두 자리만 남김
+            return s[:-4]  # 뒤 4자리 잘라 두 자리만 남김
         ax.xaxis.set_major_formatter(FuncFormatter(short_ms))
     else:
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
@@ -77,14 +76,38 @@ def ensure_dir(path):
     if path and not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
 
+def should_spread_for_day(df_day: pd.DataFrame, day_key: pd.Timestamp) -> bool:
+    """
+    날짜 규칙:
+    - (해당 연도) 8월 4일 이전: 무조건 펼치기(True)
+    - (해당 연도) 8월 11일 이후: 펼치기 금지(False, 기록된 대로)
+    """
+    year = day_key.year
+    cut_a = pd.Timestamp(f"{year}-08-04")
+    cut_b = pd.Timestamp(f"{year}-08-11")
+
+    if day_key < cut_a:
+        return True
+    if day_key >= cut_b:
+        return False
+
+    # 자동 판별 구간
+    t = pd.to_datetime(df_day[TIME_COL])
+    no_us = (t.dt.microsecond == 0).all()
+    has_dups = t.duplicated(keep=False).any()
+    return bool(no_us and has_dups)
+
 def plot_one_day(df_day: pd.DataFrame, day_key: pd.Timestamp):
     # 유입 순서 보존 + 정렬
     df_day = df_day.copy()
     df_day['_ord'] = np.arange(len(df_day))
     df_day = df_day.sort_values([TIME_COL, '_ord'], kind='mergesort')
 
-    # 동시간 펼치기 (하루 데이터에만 적용!)
-    t_plot = build_plot_time_by_timestamp(df_day, TIME_COL, fallback='median')
+    # 날짜/데이터 조건에 따라 시간열 결정
+    if should_spread_for_day(df_day, day_key):
+        t_plot = build_plot_time_by_timestamp(df_day, TIME_COL, fallback='median')
+    else:
+        t_plot = pd.to_datetime(df_day[TIME_COL])
 
     # 숫자화 & 스무딩
     x = moving_average(pd.to_numeric(df_day[X_COL], errors="coerce").astype(float), SMOOTH_WINDOW)
@@ -97,6 +120,12 @@ def plot_one_day(df_day: pd.DataFrame, day_key: pd.Timestamp):
 
     fig, ax = plt.subplots(figsize=(12, 6))
     fig.subplots_adjust(right=0.82)
+
+    # 창 제목에 날짜 표기(창 분리 확인용)
+    try:
+        fig.canvas.manager.set_window_title(f"{day_key.strftime('%Y-%m-%d')} — Gravity")
+    except Exception:
+        pass
 
     lines, labels = [], []
     ln_x, = ax.plot(t_dt, x, linestyle="-", marker="o", markersize=3, label="x")
@@ -133,11 +162,7 @@ def plot_one_day(df_day: pd.DataFrame, day_key: pd.Timestamp):
 
     plt.tight_layout(rect=(0, 0, 0.82, 1))
 
-    # (옵션) 저장
-    if SAVE_PNG_DIR:
-        ensure_dir(SAVE_PNG_DIR)
-        out_path = os.path.join(SAVE_PNG_DIR, f"{day_key.strftime('%Y%m%d')}.png")
-        fig.savefig(out_path, dpi=150)
+    return fig  # 메인에서 fig.show() 호출용
 
 def main():
     df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME)
@@ -157,11 +182,17 @@ def main():
     # ✔ 날짜 키 생성 (정규화해서 00:00 기준으로 같은 날 묶기)
     df['__date__'] = pd.to_datetime(df[TIME_COL]).dt.normalize()
 
-    # 날짜별로 개별 figure 생성
+    # 날짜별로 개별 figure 생성 후 즉시 show()
+    figs = []
     for day_key, df_day in df.groupby('__date__', sort=True):
-        plot_one_day(df_day, day_key)
+        fig = plot_one_day(df_day, day_key)
+        figs.append(fig)
+        try:
+            fig.show()  # 백엔드에 따라 창 분리를 확실히 함
+        except Exception:
+            pass
 
-    plt.show()
+    plt.show()  # 일부 백엔드는 마지막에 한 번 더 호출 필요
 
 if __name__ == "__main__":
     main()
